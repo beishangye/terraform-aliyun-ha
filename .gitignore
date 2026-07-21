@@ -1,0 +1,65 @@
+# ====================
+#  Terraform 相关
+# ====================
+# 本地状态文件 (包含资源ID、IP等敏感信息)
+*.tfstate
+*.tfstate.*
+
+# 本地模块缓存目录
+.terraform/
+.terraform.lock.hcl
+
+# 本地覆盖文件和备份文件
+*.tfvars
+*.tfvars.json
+terraform.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# 临时文件和日志
+crash.log
+crash.*.log
+*.log
+*.backup
+
+# ====================
+#  操作系统相关
+# ====================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ====================
+#  编辑器相关
+# ====================
+# VSCode
+.vscode/
+*.swp
+*.swo
+
+# IntelliJ IDEA
+.idea/
+*.iml
+
+# Vim
+*.un~
+
+# ====================
+#  敏感凭据文件 (安全底线)
+# ====================
+# 阿里云凭证文件
+credentials
+*.pem
+*.key
+*.pub
