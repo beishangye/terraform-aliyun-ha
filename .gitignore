@@ -1,22 +1,32 @@
 # ====================
 #  Terraform 相关
 # ====================
-# 本地状态文件 (包含资源ID、IP等敏感信息)
+# 本地状态文件（包含资源 ID、IP、以及变量明文，属于敏感文件）
 *.tfstate
 *.tfstate.*
+.terraform.tfstate.lock.info
 
-# 本地模块缓存目录
+# Provider 缓存目录
 .terraform/
-.terraform.lock.hcl
+# 注意：.terraform.lock.hcl 必须提交！
+# 它锁定 provider 精确版本 + 各平台二进制的校验和（h1: 哈希），
+# 是「可复现」和「供应链安全」的基础。
+# 只忽略 .terraform/ 目录，不忽略 lock 文件。
 
-# 本地覆盖文件和备份文件
+# 变量文件（真实值不入库）；但示例文件要提交
 *.tfvars
 *.tfvars.json
-terraform.tfvars
+!*.tfvars.example
+
+# 覆盖文件
 override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+
+# plan 产物
+*.tfplan
+tfplan
 
 # 临时文件和日志
 crash.log
@@ -56,10 +66,11 @@ Desktop.ini
 *.un~
 
 # ====================
-#  敏感凭据文件 (安全底线)
+#  敏感凭据文件（安全底线）
 # ====================
 # 阿里云凭证文件
 credentials
 *.pem
 *.key
 *.pub
+.env
