@@ -1,0 +1,44 @@
+# ============================================================
+# 变量示例文件
+#
+# 使用方法：
+#   cp terraform.tfvars.example terraform.tfvars
+#   然后修改下面三个【必填】项
+#
+# terraform.tfvars 已被 .gitignore 忽略，不会进版本库。
+# 但请记住：.gitignore 只是最后一道网，真正的防线是
+# pre-commit hook（gitleaks）和不在任何文档里写真实密码。
+# ============================================================
+
+region = "cn-hangzhou"
+
+# ---------- 必填 ----------
+
+# 你当前机器的公网 IP，用 /32 只放行自己。
+# 查法：curl -s https://ifconfig.me
+# 注意：不允许填 0.0.0.0/0，变量校验会直接报错
+my_ip = "203.0.113.10/32"
+
+# ECS root 密码：8-30 位，必须同时含大写、小写、数字
+ecs_password = "ChangeMe2026Aa"
+
+# RDS 账号密码：8-32 位，必须同时含大写、小写、数字
+rds_account_password = "ChangeMe2026Bb"
+
+# ---------- 按需修改 ----------
+
+# 可用区（az_web1 与 az_web2 必须不同，否则跨 AZ 高可用失效）
+# az_web1 = "cn-hangzhou-h"
+# az_web2 = "cn-hangzhou-i"
+# az_rds  = "cn-hangzhou-i"
+
+# 标签（用于成本分摊与批量查找）
+# project_name = "ha-demo"
+# environment  = "dev"
+
+# 规格
+# ecs_type             = "ecs.e-c1m1.large"
+# ecs_system_disk_size = 40
+# rds_instance_class   = "mysql.n2.small.1"
+# rds_instance_storage = 20
+# rds_storage_type     = "cloud_essd"
