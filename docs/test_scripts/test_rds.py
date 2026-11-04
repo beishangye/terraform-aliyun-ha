@@ -1,101 +1,135 @@
 #!/usr/bin/env python3
-import pymysql
+"""RDS MySQL 连通性与读写测试。
+
+凭证一律从环境变量读取，不写死在代码里。
+（原版本把密码硬编码在 RDS_CONFIG 里，一旦提交就是永久泄漏。）
+
+用法：
+    export RDS_HOST=rm-xxxxxxxx.mysql.rds.aliyuncs.com
+    export RDS_USER=app_user
+    export RDS_PASSWORD='你的密码'
+    export RDS_DATABASE=app_database
+    export RDS_PORT=3306          # 可选，默认 3306
+
+    python3 test_rds.py
+
+退出码：
+    0 全部通过
+    1 测试失败
+    2 配置缺失 / 依赖缺失
+"""
+
+import os
 import sys
 
-# RDS 连接配置（请替换为实际值）
-RDS_CONFIG = {
-    'host': 'rm-xxxxx.mysql.rds.aliyuncs.com',  # 替换为你的 RDS 地址
-    'user': 'app_user',
-    'password': 'RDS@Passw0rd2026',
-    'database': 'app_database',  # 指定连接到 app_database
-    'port': 3306,
-    'charset': 'utf8mb4'
-}
+try:
+    import pymysql
+except ImportError:
+    sys.exit("缺少依赖，请先安装：pip install pymysql")
 
-def test_connection():
-    """测试 RDS 连接并执行查询"""
-    connection = None
-    cursor = None
+REQUIRED_ENV = ("RDS_HOST", "RDS_USER", "RDS_PASSWORD")
+
+
+def load_config() -> dict:
+    missing = [k for k in REQUIRED_ENV if not os.getenv(k)]
+    if missing:
+        sys.exit(f"缺少环境变量：{', '.join(missing)}")
+
+    return {
+        "host": os.environ["RDS_HOST"],
+        "user": os.environ["RDS_USER"],
+        "password": os.environ["RDS_PASSWORD"],
+        "database": os.getenv("RDS_DATABASE", "app_database"),
+        "port": int(os.getenv("RDS_PORT", "3306")),
+        "charset": "utf8mb4",
+        "connect_timeout": 10,
+    }
+
+
+def run_tests(cfg: dict) -> bool:
+    conn = None
+    cur = None
     try:
-        print("🔄 正在尝试连接到 RDS...")
-        # 建立连接
-        connection = pymysql.connect(**RDS_CONFIG)
-        print("✅ 成功连接到 RDS！")
-        
-        # 创建游标
-        cursor = connection.cursor()
-        
-        # 执行查询 1: 测试基础查询
-        print("\n📊 执行查询: SELECT 1")
-        cursor.execute("SELECT 1")
-        result = cursor.fetchone()
-        print(f"✅ 查询结果: {result[0]}")
-        
-        # 执行查询 2: 查看数据库版本
-        print("\n📊 执行查询: SELECT VERSION()")
-        cursor.execute("SELECT VERSION()")
-        result = cursor.fetchone()
-        print(f"✅ MySQL 版本: {result[0]}")
-        
-        # 执行查询 3: 查看当前数据库
-        print("\n📊 执行查询: SELECT DATABASE()")
-        cursor.execute("SELECT DATABASE()")
-        result = cursor.fetchone()
-        print(f"✅ 当前数据库: {result[0]}")
-        
-        # 执行查询 4: 创建测试表并插入数据
-        print("\n📊 执行测试: 创建表并插入数据...")
-        cursor.execute("CREATE TABLE IF NOT EXISTS connection_test (id INT, name VARCHAR(50))")
-        cursor.execute("INSERT INTO connection_test VALUES (1, 'test1'), (2, 'test2')")
-        connection.commit()
-        print("✅ 数据插入成功")
-        
-        # 执行查询 5: 查询刚插入的数据
-        print("\n📊 查询测试数据:")
-        cursor.execute("SELECT * FROM connection_test")
-        rows = cursor.fetchall()
-        for row in rows:
-            print(f"   ID: {row[0]}, Name: {row[1]}")
-        
-        # 清理测试数据
-        cursor.execute("DROP TABLE connection_test")
-        connection.commit()
-        print("\n✅ 测试数据已清理")
-        
-        print("\n🎉 所有测试通过！RDS 连接完全正常。")
+        print("[1/5] 建立连接 ...")
+        conn = pymysql.connect(**cfg)
+        cur = conn.cursor()
+        print("      连接成功")
+
+        print("[2/5] 基础查询 ...")
+        cur.execute("SELECT 1")
+        if cur.fetchone()[0] != 1:
+            raise RuntimeError("SELECT 1 返回值异常")
+
+        cur.execute("SELECT VERSION()")
+        version = cur.fetchone()[0]
+        print(f"      MySQL 版本: {version}")
+
+        cur.execute("SELECT DATABASE()")
+        print(f"      当前库: {cur.fetchone()[0]}")
+
+        print("[3/5] 连接数检查 ...")
+        cur.execute("SHOW STATUS LIKE 'Threads_connected'")
+        threads = cur.fetchone()[1]
+        cur.execute("SHOW VARIABLES LIKE 'max_connections'")
+        max_conn = cur.fetchone()[1]
+        used_pct = int(threads) / int(max_conn) * 100
+        print(f"      当前连接 {threads} / 上限 {max_conn}（{used_pct:.1f}%）")
+        if used_pct > 80:
+            print("      ⚠️  连接使用率超过 80%，需要排查连接泄漏或慢查询")
+
+        print("[4/5] 读写测试 ...")
+        table = "connection_test"
+        cur.execute(f"DROP TABLE IF EXISTS {table}")
+        cur.execute(
+            f"CREATE TABLE {table} (id INT PRIMARY KEY, name VARCHAR(50)) "
+            "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        )
+        cur.execute(f"INSERT INTO {table} VALUES (1, 'test1'), (2, 'test2')")
+        conn.commit()
+        cur.execute(f"SELECT id, name FROM {table} ORDER BY id")
+        rows = cur.fetchall()
+        if len(rows) != 2:
+            raise RuntimeError(f"写入后读回行数异常：{len(rows)}")
+        print(f"      写入并读回 {len(rows)} 行")
+
+        print("[5/5] 清理 ...")
+        cur.execute(f"DROP TABLE {table}")
+        conn.commit()
+        print("      测试表已删除")
+
+        print("\n全部测试通过。")
         return True
-        
-    except pymysql.MySQLError as e:
-        print(f"❌ MySQL 错误: {e}")
+
+    except pymysql.MySQLError as exc:
+        print(f"\nMySQL 错误: {exc}")
+        if exc.args and exc.args[0] == 1040:
+            print("提示：1040 = Too many connections。"
+                  "普通账号此时连不进去，请用 root（MySQL 会预留一个连接）"
+                  "或阿里云 RDS 控制台的「会话管理」直接 KILL 会话。")
         return False
-    except Exception as e:
-        print(f"❌ 其他错误: {e}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"\n测试失败: {exc}")
         return False
     finally:
-        # 关闭连接
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
-            print("🔒 数据库连接已关闭")
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()
+            print("连接已关闭")
+
+
+def main() -> None:
+    cfg = load_config()
+    print("=" * 52)
+    print(" RDS MySQL 连通性测试")
+    print("=" * 52)
+    print(f"  Host    : {cfg['host']}:{cfg['port']}")
+    print(f"  User    : {cfg['user']}")
+    print(f"  Database: {cfg['database']}")
+    print("  Password: ******（从环境变量读取，不打印）")
+    print("=" * 52)
+    sys.exit(0 if run_tests(cfg) else 1)
+
 
 if __name__ == "__main__":
-    print("=" * 50)
-    print("  RDS MySQL 连接测试工具")
-    print("=" * 50)
-    
-    # 确认配置
-    print(f"\n📋 当前配置:")
-    print(f"   Host: {RDS_CONFIG['host']}")
-    print(f"   User: {RDS_CONFIG['user']}")
-    print(f"   Database: {RDS_CONFIG['database']}")
-    
-    print("\n⚠️  请确认以上配置正确。")
-    response = input("是否继续？(y/n): ")
-    
-    if response.lower() == 'y':
-        success = test_connection()
-        sys.exit(0 if success else 1)
-    else:
-        print("已取消测试")
-        sys.exit(0)
+    main()
