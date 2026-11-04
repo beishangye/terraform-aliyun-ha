@@ -1,0 +1,155 @@
+name: terraform-ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_VERSION: "1.9.8"
+
+jobs:
+  # ==========================================================
+  # 静态检查：不需要任何云凭据，零成本，每次 push 都跑
+  #
+  # 顺序设计原则：越便宜越靠前。
+  # fmt 2 秒能拦的错，不该让 CI 花 60 秒连真云跑 plan 才发现。
+  # ==========================================================
+  static-checks:
+    name: fmt / validate / lint / security
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      # ① 格式：秒级，纯文本。不通过说明连 fmt 都没跑
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff
+
+      # ② 初始化：装 provider，但不连 backend、不改 lock
+      #    -backend=false 是关键：CI 不需要读生产 state
+      #    -lockfile=readonly 保证 CI 不会偷偷改 lock 来"凑合跑过"
+      - name: terraform init (no backend)
+        run: terraform init -backend=false -lockfile=readonly -input=false
+
+      # ③ 语法 + 类型 + 引用完整性
+      - name: terraform validate
+        run: terraform validate -no-color
+
+      # ④ provider 层面的正确性（废弃参数、未使用变量、非法写法）
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.52.0
+
+      - name: TFLint
+        run: |
+          tflint --init
+          tflint --recursive --format compact
+
+      # ⑤ 安全基线扫描
+      #    soft_fail=true：先只报告不阻断。
+      #    等基线收敛（把高危项清零）后再改成 false 打开阻断，
+      #    否则第一天就会全红，然后大家学会无视它 —— 那还不如没有。
+      - name: Checkov
+        uses: bridgecrewio/checkov-action@v12
+        continue-on-error: true
+        with:
+          directory: .
+          framework: terraform
+          soft_fail: true
+          output_format: cli
+          quiet: true
+
+  # ==========================================================
+  # terraform plan：默认关闭
+  #
+  # 开启前必须满足两个前提，否则这个 job 毫无意义甚至会误导：
+  #   1. 已配置远程 state（OSS backend + Tablestore 锁）。
+  #      本地 state 在 CI 里不存在，plan 会报告"所有资源都要新建"，
+  #      那不是变更评审，那是幻觉。
+  #   2. 已配置阿里云凭据（推荐 OIDC + STS 临时凭证，见 README §安全说明）。
+  #
+  # 开启方式：仓库 Settings → Secrets and variables → Actions → Variables
+  #          新增 ENABLE_PLAN = true
+  # ==========================================================
+  plan:
+    name: terraform plan
+    runs-on: ubuntu-latest
+    needs: static-checks
+    if: vars.ENABLE_PLAN == 'true'
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      # ⚠️ 降级方案：这里用的是长期 AccessKey。
+      #    生产环境必须换成 OIDC 联合身份 + STS 临时凭证
+      #    （阿里云 RAM 支持 OIDC 身份提供商，信任策略里用 sub claim
+      #     卡死到具体 repo 和分支）。原因见 README「安全说明」。
+      - name: Terraform init
+        env:
+          ALICLOUD_ACCESS_KEY: ${{ secrets.ALICLOUD_ACCESS_KEY }}
+          ALICLOUD_SECRET_KEY: ${{ secrets.ALICLOUD_SECRET_KEY }}
+        run: terraform init -input=false
+
+      - name: Terraform plan
+        id: plan
+        env:
+          ALICLOUD_ACCESS_KEY: ${{ secrets.ALICLOUD_ACCESS_KEY }}
+          ALICLOUD_SECRET_KEY: ${{ secrets.ALICLOUD_SECRET_KEY }}
+        run: |
+          terraform plan -input=false -no-color -out=tfplan
+          terraform show -no-color tfplan > plan.txt
+        continue-on-error: true
+
+      # 门禁：plan 里出现任何 destroy 就失败。
+      # apply 是不可逆的，plan 阶段多看 10 秒，胜过生产回滚 2 小时。
+      - name: 检查 plan 中是否含 destroy
+        if: steps.plan.outcome == 'success'
+        run: |
+          count=$(terraform show -json tfplan \
+            | jq '[.resource_changes[] | select(.change.actions | index("delete"))] | length')
+          echo "destroy 资源数: $count"
+          if [ "$count" -gt 0 ]; then
+            echo "::error::plan 中包含 destroy 操作，需要人工 review 后再放行"
+            exit 1
+          fi
+
+      - name: 评论到 PR
+        if: github.event_name == 'pull_request' && steps.plan.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('plan.txt', 'utf8').slice(0, 60000);
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `### Terraform Plan\n<details><summary>展开完整输出</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n</details>`
+            });
+
+      - name: plan 失败则让 job 失败
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
