@@ -1,32 +1,51 @@
-# ==================== 12. 创建 RDS MySQL 实例 ====================
+# ============================================================
+# RDS MySQL
+#
+# 本次修复记录：
+#   1. 去掉了两个 data 源（alicloud_db_zones / alicloud_db_instance_classes）。
+#      原写法 zone_id 取 zones[0]、规格取 instance_classes[0]、
+#      存储取 storage_range.min —— 三个都是"当天云上碰巧有什么"。
+#      库存一变（某可用区售罄 / 上架了新规格），plan 就会显示
+#      RDS 需要 replace，而 RDS 的 replace 等于删库重建，不做任何数据迁移。
+#      现在三个关键参数全部显式化，plan 的行为变成可预测的。
+#   2. security_ips 从整个 VPC（172.16.0.0/16）收窄到两个 Web 子网。
+#      数据库白名单应该只放行"确实需要连库的机器"，不是整个网段。
+#   3. category = HighAvailability + 单可用区 = 同机房主备热备。
+#      它防单机故障（宕机、进程崩溃、磁盘损坏），不防可用区级故障。
+#      需要机房级容灾时改用集群版/三节点企业版（multi_zone = true）。
+# ============================================================
+
+# ==================== 12. RDS 实例 ====================
 resource "alicloud_db_instance" "rds" {
   engine               = "MySQL"
   engine_version       = "8.0"
-  instance_type        = data.alicloud_db_instance_classes.rds.instance_classes[0].instance_class
-  instance_storage     = data.alicloud_db_instance_classes.rds.instance_classes[0].storage_range.min
+  category             = "HighAvailability"
   instance_charge_type = "Postpaid"
   instance_name        = var.rds_name
-  vswitch_id           = alicloud_vswitch.vswitch_rds.id
-  security_ips         = [var.vpc_cidr]
-  zone_id              = data.alicloud_db_zones.rds.zones[0].id
-  category             = "HighAvailability"
-  db_instance_storage_type = "cloud_ssd"
 
-  tags = {
-    Name        = var.rds_name
-    Environment = "dev"
-    Project     = "ha-demo"
-  }
+  # 以下三项是 ForceNew，一旦变化 = 删库重建。所以必须显式、稳定。
+  zone_id          = var.az_rds
+  instance_type    = var.rds_instance_class
+  instance_storage = var.rds_instance_storage
+
+  db_instance_storage_type = var.rds_storage_type
+  vswitch_id               = alicloud_vswitch.vswitch_rds.id
+
+  # 白名单：只放行 Web 层两个子网，不使用整个 VPC 网段
+  security_ips = local.web_subnet_cidrs
+
+  tags = merge(local.common_tags, { Name = var.rds_name })
 }
 
-# ==================== 13. 创建 RDS 数据库 ====================
+# ==================== 13. 业务数据库 ====================
+# provider 1.266.0 起 name 字段弃用，改用 data_base_name
 resource "alicloud_db_database" "db" {
-  instance_id   = alicloud_db_instance.rds.id
-  name          = var.rds_db_name
-  character_set = "utf8mb4"
+  instance_id    = alicloud_db_instance.rds.id
+  data_base_name = var.rds_db_name
+  character_set  = "utf8mb4"
 }
 
-# ==================== 14. 创建 RDS 数据库账号 ====================
+# ==================== 14. 业务账号 ====================
 resource "alicloud_db_account" "account" {
   db_instance_id   = alicloud_db_instance.rds.id
   account_name     = var.rds_account_name
@@ -34,10 +53,10 @@ resource "alicloud_db_account" "account" {
   account_type     = "Normal"
 }
 
-# ==================== 15. 授予账号数据库读写权限 ====================
+# ==================== 15. 授权（最小权限：只给业务库读写） ====================
 resource "alicloud_db_account_privilege" "privilege" {
   instance_id  = alicloud_db_instance.rds.id
   account_name = alicloud_db_account.account.account_name
   privilege    = "ReadWrite"
-  db_names     = [alicloud_db_database.db.name]
+  db_names     = [alicloud_db_database.db.data_base_name]
 }
