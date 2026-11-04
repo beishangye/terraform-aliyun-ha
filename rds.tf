@@ -34,6 +34,25 @@ resource "alicloud_db_instance" "rds" {
   # 白名单：只放行 Web 层两个子网，不使用整个 VPC 网段
   security_ips = local.web_subnet_cidrs
 
+  # 连接日志 / 慢日志（对应 Checkov CKV_ALI_35 / 36 / 37）
+  # 排障价值：出问题时能回答"谁在什么时候连过、哪条 SQL 慢"
+  # 代价：log_duration 会记录每条语句的耗时，日志量偏大；
+  #      生产上通常改为只开 slow_query_log + long_query_time
+  parameters {
+    name  = "log_connections"
+    value = "ON"
+  }
+
+  parameters {
+    name  = "log_disconnections"
+    value = "ON"
+  }
+
+  parameters {
+    name  = "log_duration"
+    value = "ON"
+  }
+
   tags = merge(local.common_tags, { Name = var.rds_name })
 }
 

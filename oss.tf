@@ -40,13 +40,22 @@ resource "alicloud_oss_bucket_acl" "bucket" {
   acl    = "private"
 }
 
-# ==================== 18. 服务端加密 ====================
+# ==================== 18. 版本控制 ====================
+# 对应 Checkov CKV_ALI_10。
+# 开了版本控制之后，误删/误覆盖的对象可以恢复 —— 这是对象存储最便宜的"后悔药"。
+# 代价：每个旧版本都算存储费，配合生命周期规则清理历史版本。
+resource "alicloud_oss_bucket_versioning" "bucket" {
+  bucket = alicloud_oss_bucket.bucket.bucket
+  status = "Enabled"
+}
+
+# ==================== 19. 服务端加密 ====================
 resource "alicloud_oss_bucket_server_side_encryption" "sse" {
   bucket        = alicloud_oss_bucket.bucket.bucket
   sse_algorithm = "AES256"
 }
 
-# ==================== 19. 强制 HTTPS ====================
+# ==================== 20. 强制 HTTPS ====================
 resource "alicloud_oss_bucket_policy" "https_only" {
   bucket = alicloud_oss_bucket.bucket.bucket
 
